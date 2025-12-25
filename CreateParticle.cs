@@ -2,35 +2,63 @@ using UnityEngine;
 using System.Collections.Generic;
 using TMPro;
 
-
+/// <summary>
+/// Gerencia criação das partículas, cálculo de velocidades (instantânea e média temporal)
+/// e interface com a UI.
+/// Também contém a classe ParticleMotion (anexa dinamicamente ao prefab BOla).
+/// </summary>
 public class CreateParticle : MonoBehaviour
 {
-    public TextMeshProUGUI velocidadeMediaText;
+    [Header("UI")]
+    public TextMeshProUGUI velocidadeMediaText;            // v_med(t) instantânea
+    public TextMeshProUGUI velocidadeMediaTemporalText;    // v_med_total (média temporal)
+    public TextMeshProUGUI sentidoVelocidadeText;          // texto do sentido
 
+    [Header("Referências")]
     public PotentialPlot potentialplot;
-    public GameObject BOla;
+    public GameObject BOla; // prefab da partícula
 
     private List<GameObject> bolas = new List<GameObject>();
 
-    public float velocidadeMedia = 0f;
+    // ---------- observáveis ----------
+    public float velocidadeMedia = 0f;            // instantânea (⟨v⟩(t))
+    public float velocidadeMediaTemporal = 0f;    // média temporal (⟨v⟩_T)
 
+    // alias público em inglês (compatibilidade com outros scripts)
+    public float meanVelocityTotal => velocidadeMediaTemporal;
+    // também expõe com nome exato se algum script espera 'meanVelocityTotal' como campo (ler apenas)
+    public float meanVelocityTotal_alias { get { return velocidadeMediaTemporal; } }
+
+    // ---------- acumuladores ----------
+    private double somaVelocidades = 0.0; // double para reduzir acumulação de erro
+    private int stepsContados = 0;
+    private int lastProcessedStep = -1;
+
+    // ----------------- API pública -----------------
     public void ResetParticles()
     {
-        foreach (GameObject BOla in bolas)
-            Destroy(BOla);
+        foreach (GameObject g in bolas)
+            Destroy(g);
 
-        bolas.Clear();      
+        bolas.Clear();
+
+        ResetVelocityAverages();
     }
 
     void Update()
     {
+        if (potentialplot == null)
+            return; // evita NRE
+
         int Quantidade = potentialplot.Quantidade;
 
+        // criar partículas até alcançar Quantidade
         while (bolas.Count < Quantidade)
         {
             float xinitial = Random.Range(0f, 1f);
-            float y_initial = -1f * potentialplot.amp * (Mathf.Sin(4f * Mathf.PI * xinitial) +
-                                     potentialplot.beta * Mathf.Sin(8f * Mathf.PI * xinitial));
+            float y_initial = -1f * potentialplot.amp *
+                (Mathf.Sin(4f * Mathf.PI * xinitial) +
+                 potentialplot.beta * Mathf.Sin(8f * Mathf.PI * xinitial));
 
             Vector2 pos = new Vector2(
                 xinitial * potentialplot.scaleX - potentialplot.scaleX,
@@ -45,10 +73,9 @@ public class CreateParticle : MonoBehaviour
             pm.SetInitialPosition(xinitial);
 
             bolas.Add(nova);
-
-            Debug.Log("Criada partícula #" + bolas.Count + " com x=" + xinitial);
         }
 
+        // destruir partículas extras
         while (bolas.Count > Quantidade)
         {
             int last = bolas.Count - 1;
@@ -56,6 +83,7 @@ public class CreateParticle : MonoBehaviour
             bolas.RemoveAt(last);
         }
 
+        // atualizar referências de allParticles
         List<ParticleMotion> motions = new List<ParticleMotion>();
         foreach (GameObject b in bolas)
             motions.Add(b.GetComponent<ParticleMotion>());
@@ -63,21 +91,35 @@ public class CreateParticle : MonoBehaviour
         foreach (ParticleMotion pm in motions)
             pm.allParticles = motions;
 
-        velocidadeMedia = ComputeAverageVelocity();
-
-        velocidadeMediaText.text = velocidadeMedia.ToString("F3") + " m/s";
-
-        Debug.Log("Velocidade média do sistema = " + velocidadeMedia);
-
+        // ---------- cálculo das médias ----------
+        ComputeVelocities();
+        UpdateUI();
     }
 
-    public float ComputeAverageVelocity()
+    // ================= VELOCIDADES =================
+
+    // calcula velocity instantânea e acumula média temporal (1 cálculo por GlobalTime.step)
+    void ComputeVelocities()
+    {
+        int step = GlobalTime.step;
+        if (step == lastProcessedStep) return;
+        lastProcessedStep = step;
+
+        velocidadeMedia = ComputeAverageVelocityInstant();
+
+        somaVelocidades += velocidadeMedia;
+        stepsContados++;
+
+        velocidadeMediaTemporal = (float)(somaVelocidades / stepsContados);
+    }
+
+    // média instantânea sobre partículas no instante atual
+    float ComputeAverageVelocityInstant()
     {
         if (bolas.Count == 0)
             return 0f;
 
         float soma = 0f;
-
         foreach (GameObject b in bolas)
         {
             ParticleMotion pm = b.GetComponent<ParticleMotion>();
@@ -86,61 +128,113 @@ public class CreateParticle : MonoBehaviour
 
         return soma / bolas.Count;
     }
+
+    // ================= UI =================
+
+    void UpdateUI()
+    {
+        // Evitar caracteres Unicode que podem não existir na fonte TMP usada
+        if (velocidadeMediaText != null)
+            velocidadeMediaText.text = velocidadeMedia.ToString("F5") + " m/s";
+
+        if (sentidoVelocidadeText != null)
+            sentidoVelocidadeText.text = GetVelocityDirection(velocidadeMediaTemporal);
+    }
+
+    string GetVelocityDirection(float v)
+    {
+        const float eps = 1e-6f; // menor limiar para detectar transporte
+        if (v > eps) return "Sentido: Direita (+x)";
+        if (v < -eps) return "Sentido: Esquerda (-x)";
+        return "Sentido: Sem transporte";
+    }
+
+    // ================= RESET =================
+
+    public void ResetVelocityAverages()
+    {
+        somaVelocidades = 0.0;
+        stepsContados = 0;
+        velocidadeMedia = 0f;
+        velocidadeMediaTemporal = 0f;
+        lastProcessedStep = -1;
+    }
 }
 
-/* ===============================================================
- *               SCRIPT DA PARTÍCULA COM RUÍDO ESTOCÁSTICO
- * =============================================================== */
 
+// --------------------- ParticleMotion ---------------------
+// classe responsável pela dinâmica de cada partícula.
+// Atualizações importantes:
+// - mantém posição reduzida x (0..1) usada para forças/potencial
+// - mantém posição desenrolada X (unwrapped) para cálculo de velocidade física contínua
 public class ParticleMotion : MonoBehaviour
 {
     public PotentialPlot potentialplot;
     public List<ParticleMotion> allParticles;
     public int myIndex;
 
+    // posições reduzidas (buffer duplo)
     private float[] x = new float[2];
-    private int step = 0;
+
+    // posições desenroladas (sem BC) correspondentes ao mesmo buffer
+    private float[] X = new float[2];
 
     public float D = 0.05f;
 
+    // Para garantir que cada step seja processado apenas uma vez
+    private int lastProcessedStep = -1;
+
+    // ---------- inicialização ----------
     public void SetInitialPosition(float x0)
     {
         x[0] = x0;
         x[1] = x0;
+
+        X[0] = x0;
+        X[1] = x0;
     }
 
+    // retorna velocidade usando posições desenroladas (X) para evitar saltos artificiais
     public float GetVelocity()
     {
-        if (step < 2) return 0f;
+        int step = GlobalTime.step;
+        if (step < 1) return 0f;
 
         int i = step % 2;
         int prev = (i + 1) % 2;
 
         float h = potentialplot.h;
 
-        return (x[i] - x[prev]) / h;
+        return (X[i] - X[prev]) / h;
     }
 
     void Update()
     {
-        float beta   = potentialplot.beta;
-        float gamma  = potentialplot.gamma;
-        float amp    = potentialplot.amp;
-        float nB     = potentialplot.nB;
-        float h      = potentialplot.h;
-        float Cte    = potentialplot.C;
-        float D      = potentialplot.D;
+        if (potentialplot == null) return;
+
+        int step = GlobalTime.step;
+        if (step == lastProcessedStep) return; // já processado este step
+        lastProcessedStep = step;
+
+        // ler parâmetros do potentialplot
+        float beta = potentialplot.beta;
+        float gamma = potentialplot.gamma;
+        float amp = potentialplot.amp;
+        float nB = potentialplot.nB;
+        float h = potentialplot.h;
+        float Cte = potentialplot.C;
+        float Dlocal = potentialplot.D; // evitar sombra com D da classe
 
         float A = 2f * Mathf.PI * amp / gamma;
         float B = nB / gamma;
 
         int i = step % 2;
 
-        RungeKuttaStep(i, A, B, beta, h, Cte, gamma, D);
+        // faça o passo de Runge-Kutta passando o step atual
+        RungeKuttaStep(i, A, B, beta, h, Cte, gamma, Dlocal, step);
 
-        step++;
-
-        float x_now = x[step % 2];
+        // x atualizado está em (i+1)%2
+        float x_now = x[(i + 1) % 2];
 
         Vector2 pos = new Vector2(
             x_now * potentialplot.scaleX - potentialplot.scaleX,
@@ -151,53 +245,55 @@ public class ParticleMotion : MonoBehaviour
         transform.position = pos;
     }
 
-    // =====================================================================
-    //                   CORREÇÃO AQUI ↓↓↓↓↓↓↓
-    // =====================================================================
-    float InteractionForce(float xj, float Cte)
+    // InteractionForce usa o instante 'step' para ler todos no mesmo buffer
+    float InteractionForce(int step, float xj, float Cte)
     {
         float Fs = 0f;
 
         if (allParticles == null) return 0f;
+
+        int idx = step % 2; // instante sincronizado para todas as partículas
 
         foreach (ParticleMotion other in allParticles)
         {
             if (other.myIndex == this.myIndex)
                 continue;
 
-            // *** CORREÇÃO: usar o step DA OUTRA PARTÍCULA ***
-            int idx = other.step % 2;
             float xk = other.x[idx];
-            // ---------------------------------------------------------------
 
             float dx = xj - xk;
 
             if (Mathf.Abs(dx) > 0.01f)
             {
-                Fs += Cte * Mathf.PI * (1f / Mathf.Tan(Mathf.PI * dx));
+                Fs += Cte * Mathf.PI / Mathf.Tan(Mathf.PI * dx);
             }
             else if (dx > 0)
             {
-                Fs += Cte * Mathf.PI * (1f / Mathf.Tan(Mathf.PI * 0.01f));
+                Fs += Cte * Mathf.PI / Mathf.Tan(Mathf.PI * 0.01f);
             }
             else
             {
-                Fs += Cte * Mathf.PI * (1f / Mathf.Tan(-Mathf.PI * 0.01f));
+                Fs += Cte * Mathf.PI / Mathf.Tan(-Mathf.PI * 0.01f);
             }
         }
 
         return Fs;
     }
-    // =====================================================================
 
-    void RungeKuttaStep(int i, float A, float B, float beta, float h, float Cte, float gamma, float D)
+    float ExternalForce(int step, float Bval, float h)
+    {
+        return Bval * Mathf.Sin(2f * Mathf.PI / 5f * step * h);
+    }
+
+    // Runge-Kutta que atualiza tanto x (com BC) quanto X (desenrolada)
+    void RungeKuttaStep(int i, float A, float B, float beta, float h, float Cte, float gamma, float D, int step)
     {
         float xi = x[i];
 
         float Fx(float xval) =>
             A * (Mathf.Cos(4f * Mathf.PI * xval) + 2f * beta * Mathf.Cos(8f * Mathf.PI * xval))
-            + InteractionForce(xval, Cte)
-            + B * Mathf.Sin(2f * Mathf.PI / 5f * step * h);
+            + InteractionForce(step, xval, Cte)
+            + ExternalForce(step, B, GlobalTime.h);
 
         float k1 = Fx(xi);
         float k2 = Fx(xi + h * k1 * 0.5f);
@@ -210,7 +306,22 @@ public class ParticleMotion : MonoBehaviour
 
         float xn = xi + deterministic + stochastic;
 
-        x[(i + 1) % 2] = ApplyPeriodicBC(xn);
+        // aplica condição periódica para x (reduzido)
+        float xWrapped = ApplyPeriodicBC(xn);
+        x[(i + 1) % 2] = xWrapped;
+
+        // --- Atualiza X (posição desenrolada) para evitar saltos artificiais ---
+        // dx reduzido entre novo e antigo (no espaço 0..1)
+        float dxReduced = xWrapped - x[i];
+
+        // corrigir salto de fronteira: se |dxReduced| > 0.5 assume-se atravessou a fronteira oposta
+        if (dxReduced > 0.5f)
+            dxReduced -= 1f;
+        else if (dxReduced < -0.5f)
+            dxReduced += 1f;
+
+        // acumula em X (posição desenrolada)
+        X[(i + 1) % 2] = X[i] + dxReduced;
     }
 
     float RandomGaussian()
