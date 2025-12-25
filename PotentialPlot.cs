@@ -12,11 +12,9 @@ public class PotentialPlot : MonoBehaviour
     public float beta = 1f;
     public float C = 1f;
     public float D = 0.05f; // Coeficiente de difusão
-    public float h = 0.1f; // passo de tempo
+    public float h = 0.01f; // passo de tempo
     public int Quantidade = 1;
     private LineRenderer line;
-
-    private int step = 0;
 
     void Start()
     {
@@ -55,8 +53,6 @@ public class PotentialPlot : MonoBehaviour
     void Update()
     {
         // Atualiza o gráfico se A ou gamma forem alterados em tempo real
-        step++;
-        ExternalForce(step, nB);
         DrawPotential();
     }
 }
