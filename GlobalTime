@@ -1,0 +1,9 @@
+// GlobalTime.cs
+public static class GlobalTime
+{
+    // passo discreto (contagem de passos)
+    public static int step = 0;
+
+    // passo de tempo físico (segundos) — será configurado pelo TimeManager
+    public static float h = 0.01f;
+}
